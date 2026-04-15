@@ -1,5 +1,5 @@
 {
-  "name": "saweria-middleware",
+  "name": "saweria-server",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -7,7 +7,6 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "@supabase/supabase-js": "^2.39.0",
-    "dotenv": "^16.3.1"
+    "@supabase/supabase-js": "^2.39.0"
   }
 }
