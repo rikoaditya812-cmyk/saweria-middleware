@@ -1,202 +1,241 @@
-require("dotenv").config();
-
 const express = require("express");
-const crypto = require("crypto");
 const { createClient } = require("@supabase/supabase-js");
-
 const app = express();
 app.use(express.json());
 
-// =======================
-// ENV
-// =======================
-const PORT = process.env.PORT || 3000;
+// ================================================================
+// KONFIGURASI — ganti dengan milikmu
+// ================================================================
+const SUPABASE_URL = process.env.SUPABASE_URL || "https://XXXXXXXX.supabase.co";
+const SUPABASE_KEY = process.env.SUPABASE_KEY || "YOUR_SUPABASE_SERVICE_ROLE_KEY";
+const PORT        = process.env.PORT || 3000;
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const WEBHOOK_SECRET = process.env.SAWERIA_WEBHOOK_SECRET || "";
-
-// =======================
-// 🔥 VERIFY SIGNATURE (BYPASS MODE)
-// =======================
-function verifySignature(req) {
-  // 🔥 IMPORTANT: Bypass dulu biar bisa test dari Hoppscotch
-  return true;
-
-  /*
-  // ❌ Aktifin ini nanti kalau udah production
-  if (!WEBHOOK_SECRET) return true;
-
-  const signature = req.headers["x-saweria-token"] || "";
-  const body = JSON.stringify(req.body);
-
-  const expected = crypto
-    .createHmac("sha1", WEBHOOK_SECRET)
-    .update(body)
-    .digest("hex");
-
-  try {
-    return crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expected)
-    );
-  } catch {
-    return false;
-  }
-  */
+// ================================================================
+// HELPER LOG
+// ================================================================
+function log(tag, ...args) {
+  console.log(`[${new Date().toISOString()}] [${tag}]`, ...args);
 }
 
-// =======================
-// 🔥 WEBHOOK SAWERIA (FIX FORMAT + TEST MODE)
-// =======================
-app.post("/webhook/saweria", async (req, res) => {
-  try {
-    if (!verifySignature(req)) {
-      console.warn("❌ INVALID SIGNATURE");
-      return res.status(401).json({ error: "Invalid signature" });
-    }
+// ================================================================
+// WEBHOOK SAWERIA — POST /saweria-webhook
+// Saweria kirim data ke sini saat ada donasi masuk
+// ================================================================
+app.post("/saweria-webhook", async (req, res) => {
+  const body = req.body;
+  log("WEBHOOK", "Payload masuk:", JSON.stringify(body));
 
-    const body = req.body;
-    console.log("🔥 DONASI MASUK:", JSON.stringify(body, null, 2));
+  // Saweria mengirim: donator_name, amount, message
+  const username  = body.donator_name || body.from || body.name || "Anonymous";
+  const amount    = parseInt(body.amount || body.nominal || 0);
+  const message   = body.message || body.pesan || "";
+  const user_id   = body.user_id ? parseInt(body.user_id) : null;
 
-    // 🔥 SUPPORT 2 FORMAT (REAL + TEST)
-    const data = body.data || body;
-
-    const donationId = body.id || data.id || String(Date.now());
-    const username = (data.donatur || data.username || data.name || "Anonymous").trim();
-    const amount = parseInt(data.amount || 0, 10);
-    const message = (data.message || "").trim();
-
-    if (!amount || amount <= 0) {
-      console.warn("⚠️ DONASI DIABAIKAN (amount 0)");
-      return res.json({ status: "ignored" });
-    }
-
-    // =======================
-    // SIMPAN KE SUPABASE
-    // =======================
-    const { error } = await supabase.from("saweria_donations").insert({
-      donation_id: donationId,
-      username: username,
-      amount: amount,
-      message: message || null,
-      processed: false,
-      created_at: new Date().toISOString(),
-    });
-
-    if (error) {
-      console.error("❌ SUPABASE ERROR:", error);
-      return res.status(500).json({ error: "Database error", detail: error });
-    }
-
-    console.log(`✅ SAVED: ${username} - Rp${amount}`);
-
-    res.json({ status: "ok" });
-  } catch (err) {
-    console.error("❌ WEBHOOK ERROR:", err);
-    res.status(500).json({ error: "Webhook error" });
+  if (!amount || amount <= 0) {
+    log("WEBHOOK", "Amount tidak valid, skip:", amount);
+    return res.status(200).json({ status: "skip", reason: "amount invalid" });
   }
-});
 
-// =======================
-// 📥 GET DONASI (ROBLOX)
-// =======================
-app.get("/pending-donations", async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from("saweria_donations")
-      .select("*")
-      .eq("processed", false)
-      .order("created_at", { ascending: true })
-      .limit(10);
+  const id = `saw_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
-    if (error) {
-      console.error("❌ FETCH ERROR:", error);
-      return res.status(500).json({ donations: [] });
-    }
-
-    const donations = (data || []).map((row) => ({
-      id: row.donation_id,
-      username: row.username,
-      amount: row.amount,
-      message: row.message || null,
-    }));
-
-    console.log("📦 KIRIM KE ROBLOX:", donations.length);
-
-    res.json({ donations });
-  } catch (err) {
-    console.error("❌ ERROR:", err);
-    res.status(500).json({ donations: [] });
-  }
-});
-
-// =======================
-// ✅ ACK DARI ROBLOX
-// =======================
-app.post("/ack-donation", async (req, res) => {
-  try {
-    const { id } = req.body;
-
-    if (!id) {
-      return res.status(400).json({ error: "Missing id" });
-    }
-
-    const { error } = await supabase
-      .from("saweria_donations")
-      .update({
-        processed: true,
-        processed_at: new Date().toISOString(),
-      })
-      .eq("donation_id", id);
-
-    if (error) {
-      console.error("❌ UPDATE ERROR:", error);
-      return res.status(500).json({ error });
-    }
-
-    console.log("✅ MARKED PROCESSED:", id);
-
-    res.json({ status: "ok" });
-  } catch (err) {
-    console.error("❌ ACK ERROR:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// =======================
-// ❤️ TEST ENDPOINT (BIAR GA RIBET)
-// =======================
-app.get("/test", async (req, res) => {
-  const fake = {
-    donation_id: "test-" + Date.now(),
-    username: "TestPlayer",
-    amount: 50000,
-    message: "INI TEST AUTO",
+  const { error } = await supabase.from("saweria_donations").insert({
+    id,
+    username,
+    amount,
+    message,
+    user_id,
     processed: false,
-    created_at: new Date().toISOString(),
-  };
+  });
 
-  await supabase.from("saweria_donations").insert(fake);
+  if (error) {
+    log("WEBHOOK", "❌ ERROR insert Supabase:", error.message);
+    return res.status(500).json({ status: "error", message: error.message });
+  }
 
-  console.log("🧪 TEST DONASI MASUK");
-
-  res.json({ status: "inserted", fake });
+  log("WEBHOOK", `✅ Donasi masuk | ${username} | Rp ${amount.toLocaleString()} | id: ${id}`);
+  res.status(200).json({ status: "ok", id });
 });
 
-// =======================
-// HEALTH CHECK
-// =======================
+// ================================================================
+// GET /pending-donations
+// Roblox polling ke sini setiap beberapa detik
+// ================================================================
+app.get("/pending-donations", async (req, res) => {
+  log("PENDING", "Roblox polling...");
+
+  const { data, error } = await supabase
+    .from("saweria_donations")
+    .select("id, username, amount, message, user_id")
+    .eq("processed", false)
+    .order("created_at", { ascending: true })
+    .limit(5);
+
+  if (error) {
+    log("PENDING", "❌ ERROR fetch:", error.message);
+    return res.status(500).json({ donations: [] });
+  }
+
+  // Normalisasi field agar cocok dengan Roblox script
+  const donations = (data || []).map((d) => ({
+    id:       d.id,
+    username: d.username || "Anonymous",
+    amount:   d.amount   || 0,
+    message:  d.message  || "",
+    userId:   d.user_id  || 0,
+  }));
+
+  log("PENDING", `${donations.length} donasi pending ditemukan`);
+  if (donations.length > 0) {
+    donations.forEach(d =>
+      log("PENDING", ` → ${d.username} | Rp ${d.amount.toLocaleString()} | id: ${d.id}`)
+    );
+  }
+
+  res.status(200).json({ donations });
+});
+
+// ================================================================
+// POST /ack-donation
+// Roblox kirim ACK setelah efek dijalankan → tandai processed = true
+// ================================================================
+app.post("/ack-donation", async (req, res) => {
+  const { id } = req.body;
+  if (!id) {
+    log("ACK", "❌ id tidak diberikan");
+    return res.status(400).json({ status: "error", reason: "missing id" });
+  }
+
+  const { error } = await supabase
+    .from("saweria_donations")
+    .update({ processed: true })
+    .eq("id", id);
+
+  if (error) {
+    log("ACK", `❌ ERROR update id ${id}:`, error.message);
+    return res.status(500).json({ status: "error", message: error.message });
+  }
+
+  log("ACK", `✅ Donasi ${id} ditandai processed`);
+  res.status(200).json({ status: "ok", id });
+});
+
+// ================================================================
+// POST /fake-donation — endpoint TEST manual
+// Kirim dari browser / Postman / curl untuk test tanpa Saweria
+// ================================================================
+app.post("/fake-donation", async (req, res) => {
+  const username = req.body.username || "TestDonor";
+  const amount   = parseInt(req.body.amount || 50000);
+  const message  = req.body.message || "Test donasi";
+  const user_id  = req.body.user_id ? parseInt(req.body.user_id) : null;
+
+  const id = `fake_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+  const { error } = await supabase.from("saweria_donations").insert({
+    id,
+    username,
+    amount,
+    message,
+    user_id,
+    processed: false,
+  });
+
+  if (error) {
+    log("FAKE", "❌ ERROR:", error.message);
+    return res.status(500).json({ status: "error", message: error.message });
+  }
+
+  log("FAKE", `✅ Fake donasi dibuat | ${username} | Rp ${amount.toLocaleString()} | id: ${id}`);
+  res.status(200).json({ status: "ok", id, username, amount, message });
+});
+
+// ================================================================
+// GET /top-spenders — untuk leaderboard Top Spender Saweria
+// Roblox fetch data top donor dari sini
+// ================================================================
+app.get("/top-spenders", async (req, res) => {
+  const { data, error } = await supabase
+    .from("saweria_donations")
+    .select("username, amount");
+
+  if (error) {
+    log("TOP", "❌ ERROR:", error.message);
+    return res.status(500).json({ top: [] });
+  }
+
+  // Akumulasi per username
+  const totals = {};
+  for (const d of (data || [])) {
+    const name = d.username || "Anonymous";
+    totals[name] = (totals[name] || 0) + (d.amount || 0);
+  }
+
+  const sorted = Object.entries(totals)
+    .map(([username, total]) => ({ username, total }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 10);
+
+  log("TOP", `Top ${sorted.length} spender dikembalikan`);
+  res.status(200).json({ top: sorted });
+});
+
+// ================================================================
+// POST /admin-set-donation — Admin panel manual entry
+// Khusus admin: tambah/edit total donasi seseorang
+// ================================================================
+app.post("/admin-set-donation", async (req, res) => {
+  const { admin_key, username, amount, message, user_id } = req.body;
+
+  // Ganti ADMIN_SECRET_KEY dengan key rahasia kamu
+  const ADMIN_KEY = process.env.ADMIN_KEY || "RAHASIA_ADMIN_123";
+  if (admin_key !== ADMIN_KEY) {
+    log("ADMIN", "❌ Akses ditolak, key salah");
+    return res.status(403).json({ status: "forbidden" });
+  }
+
+  if (!username || !amount) {
+    return res.status(400).json({ status: "error", reason: "username dan amount wajib diisi" });
+  }
+
+  const id = `admin_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const { error } = await supabase.from("saweria_donations").insert({
+    id,
+    username,
+    amount: parseInt(amount),
+    message: message || "[Admin Entry]",
+    user_id: user_id ? parseInt(user_id) : null,
+    processed: false, // false agar muncul di game
+  });
+
+  if (error) {
+    log("ADMIN", "❌ ERROR:", error.message);
+    return res.status(500).json({ status: "error", message: error.message });
+  }
+
+  log("ADMIN", `✅ Admin entry | ${username} | Rp ${parseInt(amount).toLocaleString()}`);
+  res.status(200).json({ status: "ok", id });
+});
+
+// ================================================================
+// GET /health — cek server hidup
+// ================================================================
 app.get("/health", (req, res) => {
   res.json({ status: "ok", time: new Date().toISOString() });
 });
 
-// =======================
-// START SERVER
-// =======================
+// ================================================================
+// START
+// ================================================================
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  log("SERVER", `✅ Berjalan di port ${PORT}`);
+  log("SERVER", "Endpoints:");
+  log("SERVER", "  POST /saweria-webhook    ← dari Saweria");
+  log("SERVER", "  GET  /pending-donations  ← polling Roblox");
+  log("SERVER", "  POST /ack-donation       ← ACK dari Roblox");
+  log("SERVER", "  GET  /top-spenders       ← leaderboard Roblox");
+  log("SERVER", "  POST /fake-donation      ← test manual");
+  log("SERVER", "  POST /admin-set-donation ← admin panel");
+  log("SERVER", "  GET  /health             ← cek server");
 });
