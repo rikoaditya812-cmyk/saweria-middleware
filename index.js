@@ -20,9 +20,14 @@ const supabase = createClient(
 const WEBHOOK_SECRET = process.env.SAWERIA_WEBHOOK_SECRET || "";
 
 // =======================
-// VERIFY SIGNATURE (AMAN)
+// 🔥 VERIFY SIGNATURE (BYPASS MODE)
 // =======================
 function verifySignature(req) {
+  // 🔥 IMPORTANT: Bypass dulu biar bisa test dari Hoppscotch
+  return true;
+
+  /*
+  // ❌ Aktifin ini nanti kalau udah production
   if (!WEBHOOK_SECRET) return true;
 
   const signature = req.headers["x-saweria-token"] || "";
@@ -41,10 +46,11 @@ function verifySignature(req) {
   } catch {
     return false;
   }
+  */
 }
 
 // =======================
-// WEBHOOK SAWERIA
+// 🔥 WEBHOOK SAWERIA (FIX FORMAT + TEST MODE)
 // =======================
 app.post("/webhook/saweria", async (req, res) => {
   try {
@@ -56,14 +62,16 @@ app.post("/webhook/saweria", async (req, res) => {
     const body = req.body;
     console.log("🔥 DONASI MASUK:", JSON.stringify(body, null, 2));
 
+    // 🔥 SUPPORT 2 FORMAT (REAL + TEST)
     const data = body.data || body;
 
-    const donationId = body.id || String(Date.now());
-    const username = (data.donatur || data.name || "Anonymous").trim();
+    const donationId = body.id || data.id || String(Date.now());
+    const username = (data.donatur || data.username || data.name || "Anonymous").trim();
     const amount = parseInt(data.amount || 0, 10);
     const message = (data.message || "").trim();
 
     if (!amount || amount <= 0) {
+      console.warn("⚠️ DONASI DIABAIKAN (amount 0)");
       return res.json({ status: "ignored" });
     }
 
@@ -80,8 +88,7 @@ app.post("/webhook/saweria", async (req, res) => {
     });
 
     if (error) {
-      console.error("❌ SUPABASE FULL ERROR:", error);
-      console.error("❌ DETAIL:", JSON.stringify(error, null, 2));
+      console.error("❌ SUPABASE ERROR:", error);
       return res.status(500).json({ error: "Database error", detail: error });
     }
 
@@ -95,7 +102,7 @@ app.post("/webhook/saweria", async (req, res) => {
 });
 
 // =======================
-// GET DONASI (ROBLOX POLL)
+// 📥 GET DONASI (ROBLOX)
 // =======================
 app.get("/pending-donations", async (req, res) => {
   try {
@@ -118,6 +125,8 @@ app.get("/pending-donations", async (req, res) => {
       message: row.message || null,
     }));
 
+    console.log("📦 KIRIM KE ROBLOX:", donations.length);
+
     res.json({ donations });
   } catch (err) {
     console.error("❌ ERROR:", err);
@@ -126,12 +135,15 @@ app.get("/pending-donations", async (req, res) => {
 });
 
 // =======================
-// ACK DARI ROBLOX
+// ✅ ACK DARI ROBLOX
 // =======================
 app.post("/ack-donation", async (req, res) => {
   try {
     const { id } = req.body;
-    if (!id) return res.status(400).json({ error: "Missing id" });
+
+    if (!id) {
+      return res.status(400).json({ error: "Missing id" });
+    }
 
     const { error } = await supabase
       .from("saweria_donations")
@@ -153,6 +165,26 @@ app.post("/ack-donation", async (req, res) => {
     console.error("❌ ACK ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
+});
+
+// =======================
+// ❤️ TEST ENDPOINT (BIAR GA RIBET)
+// =======================
+app.get("/test", async (req, res) => {
+  const fake = {
+    donation_id: "test-" + Date.now(),
+    username: "TestPlayer",
+    amount: 50000,
+    message: "INI TEST AUTO",
+    processed: false,
+    created_at: new Date().toISOString(),
+  };
+
+  await supabase.from("saweria_donations").insert(fake);
+
+  console.log("🧪 TEST DONASI MASUK");
+
+  res.json({ status: "inserted", fake });
 });
 
 // =======================
